@@ -200,7 +200,7 @@
 
     <div class="field">
       <label for="promptFile">Prompt file</label>
-      <input id="promptFile" type="file" accept=".txt,.csv,text/plain,text/csv">
+      <input id="promptFile" type="file" accept=".txt,.csv,.jpg,.jpeg,.png,text/plain,text/csv,image/jpeg,image/png">
     </div>
 
     <div class="field">
@@ -215,7 +215,7 @@
 
     <div class="field">
       <label for="modelName">Model name</label>
-      <input id="modelName" type="text" value="qwen3.5-0.8b" placeholder="qwen3.5-0.8b (LM Studio), gemini-2.5-flash (Google AI Studio), meta-llama/llama-3.3-70b-instruct:free (OpenRouter)">
+      <input id="modelName" type="text" value="qwen3.5-0.8b" placeholder="qwen3.5-0.8b (LM Studio), gemini-2.5-flash (Google AI Studio), meta-llama/llama-3.3-70b-instruct:free (OpenRouter), qwen2.5-vl-7b (LM Studio vision), qwen/qwen2.5-vl-72b-instruct:free (OpenRouter vision)">
     </div>
 
     <div class="actions">
@@ -239,6 +239,8 @@
     const downloadButton = document.getElementById("downloadButton");
     const statusEl = document.getElementById("status");
     const resultsEl = document.getElementById("results");
+    const textModelPlaceholder = "qwen3.5-0.8b (LM Studio), gemini-2.5-flash (Google AI Studio), meta-llama/llama-3.3-70b-instruct:free (OpenRouter), qwen2.5-vl-7b (LM Studio vision), qwen/qwen2.5-vl-72b-instruct:free (OpenRouter vision)";
+    const visionModelPlaceholder = "qwen2.5-vl-7b (LM Studio, if loaded), qwen/qwen2.5-vl-72b-instruct:free (OpenRouter)";
 
     let results = [];
 
@@ -254,6 +256,20 @@
         reader.onerror = () => reject(reader.error || new Error("Could not read file."));
         reader.readAsText(file);
       });
+    }
+
+    function readFileAsDataUrl(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || ""));
+        reader.onerror = () => reject(reader.error || new Error("Could not read file."));
+        reader.readAsDataURL(file);
+      });
+    }
+
+    function isImageFile(file) {
+      const name = file.name.toLowerCase();
+      return file.type.startsWith("image/") || /\.(jpe?g|png)$/.test(name);
     }
 
     function getPromptLines(text) {
@@ -279,7 +295,7 @@
       }
     }
 
-    async function callModel(apiUrl, systemPrompt, input, model, apiKey) {
+    async function postChatCompletion(apiUrl, apiKey, body) {
       const headers = {
         "Content-Type": "application/json"
       };
@@ -291,13 +307,7 @@
       const response = await fetch(apiUrl, {
         method: "POST",
         headers,
-        body: JSON.stringify({
-          model,
-          messages: [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: input }
-          ]
-        })
+        body: JSON.stringify(body)
       });
 
       if (!response.ok) {
@@ -306,6 +316,33 @@
 
       const data = await response.json();
       return data.choices?.[0]?.message?.content ?? "";
+    }
+
+    async function callTextModel(apiUrl, systemPrompt, input, model, apiKey) {
+      return postChatCompletion(apiUrl, apiKey, {
+        model,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: input }
+        ]
+      });
+    }
+
+    async function callImageModel(apiUrl, systemPrompt, dataUrl, model, apiKey) {
+      const text = systemPrompt.trim() || "Transcribe this image as accurately as you can.";
+
+      return postChatCompletion(apiUrl, apiKey, {
+        model,
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "text", text },
+              { type: "image_url", image_url: { url: dataUrl } }
+            ]
+          }
+        ]
+      });
     }
 
     function clearResults() {
@@ -375,7 +412,7 @@
       const systemPrompt = systemPromptInput.value;
 
       if (!file) {
-        setStatus("Please choose a .txt or .csv file first.", true);
+        setStatus("Please choose a .txt, .csv, .jpg, .jpeg, or .png file first.", true);
         return;
       }
 
@@ -394,6 +431,24 @@
       downloadButton.style.display = "none";
 
       try {
+        if (isImageFile(file)) {
+          setStatus("Processing image...");
+
+          const dataUrl = await readFileAsDataUrl(file);
+          let responseText;
+          try {
+            responseText = await callImageModel(apiUrl, systemPrompt, dataUrl, model, apiKey);
+          } catch (error) {
+            responseText = `Error: ${error.message || String(error)}`;
+          }
+
+          results.push({ rowNumber: 1, input: file.name, response: responseText });
+          addResult(1, file.name, responseText);
+          setStatus("Done. Processed 1 image.");
+          downloadButton.style.display = "inline-block";
+          return;
+        }
+
         const text = await readFileAsText(file);
         const prompts = getPromptLines(text);
 
@@ -409,7 +464,7 @@
 
           let responseText;
           try {
-            responseText = await callModel(apiUrl, systemPrompt, input, model, apiKey);
+            responseText = await callTextModel(apiUrl, systemPrompt, input, model, apiKey);
           } catch (error) {
             responseText = `Error: ${error.message || String(error)}`;
           }
@@ -428,6 +483,14 @@
       }
     }
 
+    function updateModelPlaceholder() {
+      const file = promptFileInput.files[0];
+      modelNameInput.placeholder = file && isImageFile(file)
+        ? visionModelPlaceholder
+        : textModelPlaceholder;
+    }
+
+    promptFileInput.addEventListener("change", updateModelPlaceholder);
     runButton.addEventListener("click", runBatch);
     downloadButton.addEventListener("click", downloadCsv);
   </script>
